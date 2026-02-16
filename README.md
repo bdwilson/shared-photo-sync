@@ -1,6 +1,10 @@
 # Apple Photos to Google Photos Sync
 
-This tool synchronizes albums from your local Apple Photos library (macOS) to Google Photos. It is designed to handle iCloud-optimized libraries by downloading originals on demand and tracking upload state to avoid duplicates.
+This tool synchronizes <b>Apple Shared Albums</b> albums from your local Apple
+Photos library (macOS) to Google Photos. It is designed to handle
+iCloud-optimized libraries by downloading originals on demand and tracking
+upload state to avoid duplicates. This includes any Shared Albums that you're a
+member of, and not just the ones you created.  
 
 ## 💡 Why Use This?
 
@@ -28,6 +32,9 @@ Before setting up, please understand the following:
     *   If an album with the same name exists but wasn't created by this script, the script may fail or create a duplicate album.
 4.  **iCloud Downloads**: If your photos are stored in iCloud (Optimize Mac Storage), the script will attempt to download them. This requires a stable internet connection and can be slow.
 5.  **Permissions**: macOS requires explicit permission for terminal applications to access your Photos library.
+6.  **This tool only transfers/sees your Shared Albums**: it does not transfer
+any other albums. [add reference to Apple -> Google privacy tool for everything
+else]
 
 ---
 
