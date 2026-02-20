@@ -1,7 +1,10 @@
 import os
+import time
+import random
 import sqlite3
 import argparse
 import sys
+import logging
 import osxphotos
 import pickle
 import requests
@@ -19,6 +22,15 @@ SCOPES = [
     'https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata'
 ]
 DB_PATH = "sync_state.db"
+
+# File logging — terminal output via print() is unchanged
+logging.basicConfig(
+    filename='log.out',
+    level=logging.INFO,
+    format='%(asctime)s  %(levelname)-8s  %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+)
+log = logging.getLogger(__name__)
 
 def setup_tracking():
     conn = sqlite3.connect(DB_PATH)
@@ -94,33 +106,70 @@ def find_or_create_album(service, title, dry_run):
     return new_album.get('id')
 
 def upload_photo(service, file_path, album_id):
-    """The two-step Google Photos upload process."""
-    # 1. Upload bytes to get an upload token
+    """The two-step Google Photos upload process with retry logic."""
+    
+    def _upload_bytes_with_retry():
+        for attempt in range(5):
+            try:
+                with open(file_path, 'rb') as f:
+                    url = 'https://photoslibrary.googleapis.com/v1/uploads'
+                    headers = {
+                        'Authorization': f'Bearer {service._http.credentials.token}',
+                        'Content-Type': 'application/octet-stream',
+                        'X-Goog-Upload-Protocol': 'raw',
+                    }
+                    response = requests.post(url, data=f, headers=headers, timeout=120)
+                    response.raise_for_status()
+                    return response.text
+            except requests.exceptions.RequestException as e:
+                if isinstance(e, requests.exceptions.HTTPError) and e.response.status_code in [429, 500, 502, 503, 504]:
+                    wait = (2 ** attempt) + random.uniform(0, 1)
+                    print(f"      ⏳ Upload bytes rate limited. Retrying in {wait:.1f}s...")
+                    time.sleep(wait)
+                elif isinstance(e, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
+                    wait = (2 ** attempt) + random.uniform(0, 1)
+                    print(f"      ⏳ Connection issue ({type(e).__name__}). Retrying in {wait:.1f}s...")
+                    time.sleep(wait)
+                else:
+                    raise e
+        return None
+
+    def _create_media_with_retry(upload_token):
+        body = {
+            'albumId': album_id,
+            'newMediaItems': [{'simpleMediaItem': {'uploadToken': upload_token}}]
+        }
+        for attempt in range(5):
+            try:
+                return service.mediaItems().batchCreate(body=body).execute()
+            except HttpError as e:
+                if e.resp.status in [429, 500, 502, 503, 504]:
+                    wait = (2 ** attempt) + random.uniform(0, 1)
+                    print(f"      ⏳ Media creation rate limited. Retrying in {wait:.1f}s...")
+                    time.sleep(wait)
+                else:
+                    raise e
+        return None
+
+    # 1. Upload bytes
     try:
-        with open(file_path, 'rb') as f:
-            url = 'https://photoslibrary.googleapis.com/v1/uploads'
-            headers = {
-                'Authorization': f'Bearer {service._http.credentials.token}',
-                'Content-Type': 'application/octet-stream',
-                'X-Goog-Upload-Protocol': 'raw',
-            }
-            response = requests.post(url, data=f, headers=headers)
-            response.raise_for_status()
-            upload_token = response.text
+        upload_token = _upload_bytes_with_retry()
     except Exception as e:
         print(f"   ⚠️  Upload bytes failed: {e}")
+        log.error(f"Upload bytes failed for {file_path}: {e}")
         return None
-        
+
+    if not upload_token: return None
+
     # 2. Add the token to the specific album
-    body = {
-        'albumId': album_id,
-        'newMediaItems': [{'simpleMediaItem': {'uploadToken': upload_token}}]
-    }
     try:
-        result = service.mediaItems().batchCreate(body=body).execute()
+        result = _create_media_with_retry(upload_token)
     except Exception as e:
         print(f"   ⚠️  Media creation failed: {e}")
+        log.error(f"Media creation failed for {file_path}: {e}")
         return False
+    
+    if not result: return False
     
     # Check if Google confirmed the creation
     status = result.get('newMediaItemResults', [{}])[0].get('status', {})
@@ -155,25 +204,33 @@ def download_and_upload_missing(service, conn, album_title, g_id, missing_photos
             
         try:
             filenames = [p.filename for p in chunk]
-            print(f"      Processing chunk {i//chunk_size + 1} (items {i+1}-{min(i+chunk_size, len(missing_photos))})...")
+            chunk_label = f"chunk {i//chunk_size + 1} (items {i+1}-{min(i+chunk_size, len(missing_photos))})"
+            print(f"      Processing {chunk_label}...")
             print(f"      Downloading: {', '.join(filenames)}")
-            
+            log.info(f"Starting iCloud export: {chunk_label} — {len(chunk)} items")
+
             # Capture output to detect permission errors
             result = subprocess.run(cmd, check=True, timeout=300, capture_output=True, text=True)
             print(result.stdout)
-            
+            log.info(f"iCloud export succeeded: {chunk_label}")
+
         except subprocess.TimeoutExpired:
+            skipped = [p.uuid for p in chunk]
             print(f"      ⚠️  CLI batch export timed out.")
+            log.error(f"iCloud export timed out for {chunk_label}. Skipped UUIDs: {skipped}")
             continue
         except subprocess.CalledProcessError as e:
+            skipped = [p.uuid for p in chunk]
             print(e.stdout)
             print(e.stderr)
             if "could not get authorization" in e.stdout or "could not get authorization" in e.stderr:
+                log.error(f"Photos authorization error during export. Skipped UUIDs: {skipped}")
                 print(f"\n❌ Critical Error: Missing permissions for Photos library.")
                 print(f"   1. Open 'System Settings > Privacy & Security > Photos'.")
                 print(f"   2. Enable access for 'Visual Studio Code', 'Terminal', or 'iTerm'.")
                 print(f"   3. If your app is missing, try running this script from the macOS 'Terminal' app instead.")
                 sys.exit(1)
+            log.error(f"iCloud export failed for {chunk_label}. Skipped UUIDs: {skipped}\nstdout: {e.stdout}\nstderr: {e.stderr}")
             print(f"      ⚠️  CLI batch export failed.")
             continue
 
@@ -184,8 +241,9 @@ def download_and_upload_missing(service, conn, album_title, g_id, missing_photos
             
             if not found_files:
                 print(f"      ❌ Still missing: {photo.filename}")
+                log.warning(f"File not found after iCloud export: {photo.filename} ({photo.uuid})")
                 continue
-                
+
             # Upload the first file found (usually the image)
             # Note: This skips the video part of Live Photos if both exist, consistent with main loop
             current_idx = start_index + i + j
@@ -194,14 +252,17 @@ def download_and_upload_missing(service, conn, album_title, g_id, missing_photos
                 conn.execute("INSERT INTO uploads (photo_uuid, album_title) VALUES (?, ?)", (photo.uuid, album_title))
                 conn.commit()
                 print(f"   ✅ [{current_idx}/{total_count}] {photo.filename} (from iCloud) synced.")
+                log.info(f"Synced (iCloud): {photo.filename} ({photo.uuid}) -> {album_title}")
+                time.sleep(1)
             else:
                 print(f"   ❌ FAILED: {photo.filename}")
+                log.error(f"Upload failed (iCloud): {photo.filename} ({photo.uuid}) -> {album_title}")
 
             for f in found_files:
                 try:
                     os.remove(f)
-                except:
-                    pass
+                except OSError as e:
+                    log.warning(f"Could not remove temp file {f}: {e}")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -311,26 +372,34 @@ def main():
                 continue
 
             # Export
+            print(f"   ⏳ [{i}/{total_photos}] Preparing {photo.filename}...", end='\r', flush=True)
             try:
                 exported = photo.export(temp_dir)
-            except Exception:
+            except Exception as e:
+                log.warning(f"Local export failed for {photo.filename} ({photo.uuid}): {e}")
                 exported = []
 
             if not exported:
                 print(f"   ⚠️  Local missing: {photo.filename}. Queuing for iCloud download.")
                 missing_photos.append(photo)
                 continue
-            
+
             # Upload and Verify
             if upload_photo(service, exported[0], g_id):
                 conn.execute("INSERT INTO uploads (photo_uuid, album_title) VALUES (?, ?)", (photo.uuid, album.title))
                 conn.commit()
-                print(f"   ✅ [{i}/{total_photos}] {photo.filename} synced.")
+                print(f"   ✅ [{i}/{total_photos}] {photo.filename} synced.                    ")
+                log.info(f"Synced: {photo.filename} ({photo.uuid}) -> {album.title}")
+                time.sleep(1)
             else:
-                print(f"   ❌ FAILED: {photo.filename}. Will retry next run.")
+                print(f"   ❌ FAILED: {photo.filename}. Will retry next run.                    ")
+                log.error(f"Upload failed: {photo.filename} ({photo.uuid}) -> {album.title}")
 
             for f in exported:
-                os.remove(f)
+                try:
+                    os.remove(f)
+                except OSError as e:
+                    log.warning(f"Could not remove temp file {f}: {e}")
 
         # Process the batch of missing photos
         if missing_photos:
