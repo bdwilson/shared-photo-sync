@@ -1,15 +1,15 @@
-# Byte-compiled / optimized / DLL files	
-__pycache__/	
-*.py[codz]	
-*$py.class	
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[codz]
+*$py.class
 
-# mine.	
-client_secret.json	
-sync_state.db	
-token.pickle	
-*.code-workspace	
+# mine.
+client_secret.json
+sync_state.db
+token.pickle
+*.code-workspace
 
-# C extensions	
+# C extensions
 *.so
 venv*
 temp*
