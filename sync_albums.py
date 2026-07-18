@@ -270,8 +270,8 @@ def main():
     parser.add_argument("--force", action="store_true", help="Skip confirmation prompt")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
     parser.add_argument("--library", help="Explicitly specify path to Photos library (e.g. /Users/me/Pictures/Photos Library.photoslibrary)")
-    parser.add_argument("--albums", choices=["shared", "local", "all"], default="shared",
-                        help="Which album types to sync: 'shared' (Apple Shared Albums, default), 'local' (regular albums you created in Photos), or 'all' (both)")
+    parser.add_argument("--albums", choices=["shared", "local", "all"], default="all",
+                        help="Which album types to sync: 'shared' (Apple Shared Albums), 'local' (regular albums you created in Photos), or 'all' (both, default)")
 
     parser.add_argument("--list", action="store_true",
                         help="List matching albums with their IDs and sync status, then exit (does not contact Google)")
