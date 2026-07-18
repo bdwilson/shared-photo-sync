@@ -133,6 +133,9 @@ python3 sync_albums.py [OPTIONS]
 | `--num N` | Sync the first `N` albums found. (Mutually exclusive with `--all`) |
 | `--all` | Sync **all** albums found in the library. |
 | `--albums TYPE` | Which album types to sync: `shared` (default), `local` (regular albums you created in Photos), or `all` (both). |
+| `--list` | List matching albums with their IDs, photo counts, and pending (not-yet-synced) counts, then exit. Does not contact Google. |
+| `--album TITLE` | Sync only the album(s) with this exact title. May be repeated to select several. |
+| `--album-id ID` | Sync only the album with this ID (shown by `--list`). May be repeated. |
 | `--dry-run` | Scan library and check Google Photos, but **do not** upload or create albums. |
 | `--force` | Skip the confirmation prompt at startup. |
 | `--verbose` | Enable detailed logging (useful for debugging iCloud downloads). |
@@ -154,6 +157,24 @@ python3 sync_albums.py --num 1 --dry-run --verbose
 ```bash
 python3 sync_albums.py --all --albums all
 ```
+
+**List all albums (shared and local) with IDs and sync status:**
+```bash
+python3 sync_albums.py --list --albums all
+```
+
+**Sync just one or two specific albums:**
+```bash
+# By title
+python3 sync_albums.py --album "Summer 2024" --album "Ski Trip"
+
+# By ID (from --list), searching both album types
+python3 sync_albums.py --album-id F3A0...D9 --albums all
+```
+
+Selective syncs share the same state database as full syncs: photos uploaded
+via `--album`/`--album-id` are recorded per photo and album, so a later
+`--all` run skips them and only uploads what's still missing.
 
 ---
 

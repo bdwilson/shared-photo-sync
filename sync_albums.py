@@ -273,20 +273,23 @@ def main():
     parser.add_argument("--albums", choices=["shared", "local", "all"], default="shared",
                         help="Which album types to sync: 'shared' (Apple Shared Albums, default), 'local' (regular albums you created in Photos), or 'all' (both)")
 
-    group = parser.add_mutually_exclusive_group(required=True)
+    parser.add_argument("--list", action="store_true",
+                        help="List matching albums with their IDs and sync status, then exit (does not contact Google)")
+    parser.add_argument("--album", action="append", metavar="TITLE", default=[],
+                        help="Sync only the album(s) with this exact title. May be repeated.")
+    parser.add_argument("--album-id", action="append", metavar="ID", default=[],
+                        help="Sync only the album with this ID (shown by --list). May be repeated.")
+
+    group = parser.add_mutually_exclusive_group()
     group.add_argument("--num", type=int, help="Number of albums to sync")
     group.add_argument("--all", action="store_true", help="Sync all albums")
     args = parser.parse_args()
 
+    if not (args.list or args.album or args.album_id or args.num or args.all):
+        parser.error("specify --num N or --all, select albums with --album/--album-id, or use --list")
+
     print("🚀 Initializing Sync...")
     conn = setup_tracking()
-    
-    try:
-        service = get_google_service()
-        print("✅ Google Photos: Connected")
-    except Exception as e:
-        print(f"❌ Google Photos: Connection Failed ({e})")
-        return
 
     try:
         if args.library:
@@ -302,14 +305,17 @@ def main():
         # album_info_shared = Apple Shared Albums; album_info = regular user albums
         # (excludes smart albums). Both return AlbumInfo objects with the same interface.
         selected_albums = []
+        album_types = {}
         counts = []
         if args.albums in ("shared", "all"):
             shared = photosdb.album_info_shared
             selected_albums.extend(shared)
+            album_types.update({a.uuid: "shared" for a in shared})
             counts.append(f"{len(shared)} shared")
         if args.albums in ("local", "all"):
             local = photosdb.album_info
             selected_albums.extend(local)
+            album_types.update({a.uuid: "local" for a in local})
             counts.append(f"{len(local)} local")
         print(f"✅ Local Library: Connected ({', '.join(counts)} albums found)")
         print(f"   📂 Path: {photosdb.library_path}")
@@ -323,6 +329,37 @@ def main():
         print(f"⚠️  Skipping {len(untitled)} album(s) with no title.")
         selected_albums = [a for a in selected_albums if a.title]
 
+    # Selective sync: narrow to explicitly requested albums.
+    if args.album or args.album_id:
+        wanted_titles = set(args.album)
+        wanted_ids = {i.upper() for i in args.album_id}
+        filtered = [a for a in selected_albums
+                    if a.title in wanted_titles or a.uuid.upper() in wanted_ids]
+        matched_titles = {a.title for a in filtered}
+        matched_ids = {a.uuid.upper() for a in filtered}
+        for t in sorted(wanted_titles - matched_titles):
+            print(f"⚠️  No album found with title: {t}")
+        for i in sorted(wanted_ids - matched_ids):
+            print(f"⚠️  No album found with ID: {i}")
+        if not filtered:
+            print("❌ None of the requested albums were found. Use --list to see available albums.")
+            return
+        selected_albums = filtered
+        print(f"🎯 Selective sync: {len(selected_albums)} album(s) selected.")
+
+    if args.list:
+        cursor = conn.cursor()
+        print(f"\n📋 Albums ({len(selected_albums)}):")
+        print(f"   {'TYPE':<7} {'ID':<38} {'PHOTOS':>6} {'PENDING':>7}  TITLE")
+        for album in sorted(selected_albums, key=lambda a: (album_types[a.uuid], a.title)):
+            synced_uuids = {row[0] for row in cursor.execute(
+                "SELECT photo_uuid FROM uploads WHERE album_title=?", (album.title,))}
+            photos = album.photos
+            pending = sum(1 for p in photos if p.uuid not in synced_uuids)
+            print(f"   {album_types[album.uuid]:<7} {album.uuid:<38} {len(photos):>6} {pending:>7}  {album.title}")
+        print("\nℹ️  Use --album \"TITLE\" or --album-id ID to sync specific albums.")
+        return
+
     # State tracking and Google album lookup both key on title, so albums sharing
     # a title (e.g. a local album named like a shared one, or duplicates across
     # folders) would merge into a single Google album. Warn so it's not silent.
@@ -334,7 +371,14 @@ def main():
         print(f"⚠️  {len(duplicates)} album title(s) appear more than once; their photos will be combined into one Google album each:")
         for t in duplicates:
             print(f"      - {t}")
-    
+
+    try:
+        service = get_google_service()
+        print("✅ Google Photos: Connected")
+    except Exception as e:
+        print(f"❌ Google Photos: Connection Failed ({e})")
+        return
+
     print("🔍 Calculating pending uploads...")
     cursor = conn.cursor()
     albums_to_sync = []
