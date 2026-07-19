@@ -3,6 +3,7 @@ import time
 import random
 import sqlite3
 import argparse
+import fnmatch
 import sys
 import logging
 import osxphotos
@@ -265,7 +266,22 @@ def download_and_upload_missing(service, conn, album_title, g_id, missing_photos
                     log.warning(f"Could not remove temp file {f}: {e}")
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''examples:
+  # List every album (shared and local) with IDs and pending counts
+  python3 sync_albums.py --list
+
+  # Sync everything EXCEPT albums whose name begins with "-"
+  # (note the "=": required when the pattern itself starts with "-")
+  python3 sync_albums.py --all --exclude="-*"
+
+  # Sync ONLY the albums whose name begins with "-"
+  python3 sync_albums.py --album="-*"
+
+  # Sync two specific albums by name
+  python3 sync_albums.py --album "Summer 2024" --album "Ski Trip"
+''')
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true", help="Skip confirmation prompt")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
@@ -276,9 +292,11 @@ def main():
     parser.add_argument("--list", action="store_true",
                         help="List matching albums with their IDs and sync status, then exit (does not contact Google)")
     parser.add_argument("--album", action="append", metavar="TITLE", default=[],
-                        help="Sync only the album(s) with this exact title. May be repeated.")
+                        help="Sync only album(s) whose title matches this exact title or glob pattern (e.g. \"Summer*\"). May be repeated.")
     parser.add_argument("--album-id", action="append", metavar="ID", default=[],
                         help="Sync only the album with this ID (shown by --list). May be repeated.")
+    parser.add_argument("--exclude", action="append", metavar="PATTERN", default=[],
+                        help="Skip album(s) whose title matches this exact title or glob pattern (e.g. \"-*\"). May be repeated.")
 
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--num", type=int, help="Number of albums to sync")
@@ -330,15 +348,16 @@ def main():
         selected_albums = [a for a in selected_albums if a.title]
 
     # Selective sync: narrow to explicitly requested albums.
+    # --album accepts exact titles or glob patterns (fnmatch), e.g. --album "-*"
     if args.album or args.album_id:
-        wanted_titles = set(args.album)
         wanted_ids = {i.upper() for i in args.album_id}
         filtered = [a for a in selected_albums
-                    if a.title in wanted_titles or a.uuid.upper() in wanted_ids]
-        matched_titles = {a.title for a in filtered}
+                    if any(fnmatch.fnmatchcase(a.title, pat) for pat in args.album)
+                    or a.uuid.upper() in wanted_ids]
         matched_ids = {a.uuid.upper() for a in filtered}
-        for t in sorted(wanted_titles - matched_titles):
-            print(f"⚠️  No album found with title: {t}")
+        for pat in args.album:
+            if not any(fnmatch.fnmatchcase(a.title, pat) for a in selected_albums):
+                print(f"⚠️  No album matches title/pattern: {pat}")
         for i in sorted(wanted_ids - matched_ids):
             print(f"⚠️  No album found with ID: {i}")
         if not filtered:
@@ -346,6 +365,18 @@ def main():
             return
         selected_albums = filtered
         print(f"🎯 Selective sync: {len(selected_albums)} album(s) selected.")
+
+    # Exclusions apply last, so they win over --album/--album-id matches.
+    if args.exclude:
+        before = len(selected_albums)
+        selected_albums = [a for a in selected_albums
+                           if not any(fnmatch.fnmatchcase(a.title, pat) for pat in args.exclude)]
+        removed = before - len(selected_albums)
+        if removed:
+            print(f"🚫 Excluded {removed} album(s) matching: {', '.join(args.exclude)}")
+        if not selected_albums:
+            print("❌ All albums were excluded. Nothing to do.")
+            return
 
     if args.list:
         cursor = conn.cursor()
