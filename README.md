@@ -274,13 +274,25 @@ albums — matching both exact titles and the transfer service's
 
     ```js
     window.__albumObserver.disconnect();
-    copy([...window.__albumMap.values()].join('\n'));
-    console.log('captured:', window.__albumMap.size, 'albums');
+    const blob = new Blob([[...window.__albumMap.values()].join('\n')], {type: 'text/plain'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'google_albums.txt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    console.log('downloaded:', window.__albumMap.size, 'albums to google_albums.txt');
     ```
 
-    The console prints `captured: N albums` so you can sanity-check the
-    count against how many albums you actually have; the titles are on your
-    clipboard. Paste them into `google_albums.txt`.
+    This downloads `google_albums.txt` straight to your Downloads folder —
+    move it next to `sync_albums.py` (or pass its full path to
+    `--google-albums`). The console prints `downloaded: N albums` so you can
+    sanity-check the count against how many albums you actually have.
+    (An earlier version of this step used the console's `copy()` helper to
+    put the list on your clipboard instead of downloading a file directly;
+    it worked inconsistently — `copy()` can silently fail depending on
+    focus/timing — so triggering a real file download is more reliable.)
 
     A couple of implementation notes, in case Google changes its markup and
     you need to adjust the snippet: `albumTitle()` finds the thumbnail
