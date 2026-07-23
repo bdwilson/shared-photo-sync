@@ -231,41 +231,67 @@ albums — matching both exact titles and the transfer service's
 **Creating `google_albums.txt` — two options:**
 
 1.  **Browser console (fast, nothing to download).** Open
-    [photos.google.com/albums](https://photos.google.com/albums), scroll to the
-    very bottom so every album has loaded, then open the developer console
-    (⌥⌘J in Chrome).
+    [photos.google.com/albums](https://photos.google.com/albums) and open the
+    developer console (⌥⌘J in Chrome).
 
     Chrome blocks pasting into the console by default (a self-XSS warning). If
     you see a message about it, type `allow pasting` and press Enter first —
     you only need to do this once per console session.
 
-    Then paste **only the code below** (not the ```` ```js ```` fence around
-    it — that's just Markdown syntax, not part of the snippet) and press
-    Enter:
+    Google Photos only keeps tiles currently near your scroll position in the
+    page (virtualization), so a single query after scrolling to the bottom
+    misses everything that scrolled out of view earlier. Instead, capture
+    continuously while you scroll, in three steps.
+
+    **Step 1 — paste this once to start capturing** (not the ```` ```js ````
+    fence around it — that's just Markdown syntax, not part of the snippet):
 
     ```js
-    const seen = new Set();
-    const titles = [];
-    for (const a of document.querySelectorAll('a[href*="/album/"]')) {
-      const key = a.getAttribute('data-media-key') || a.href;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const title = a.textContent.trim();
-      if (title) titles.push(title);
+    window.__albumMap = window.__albumMap || new Map();
+    function albumTitle(a) {
+      const thumb = a.querySelector('[style*="background-image"]');
+      const titleEl = thumb ? thumb.nextElementSibling : null;
+      return (titleEl ? titleEl.textContent : a.textContent).trim();
     }
-    copy(titles.join('\n'));
-    console.log('captured:', titles.length, 'of', document.querySelectorAll('a[href*="/album/"]').length, 'links');
+    function scan() {
+      document.querySelectorAll('a[href*="/album/"]').forEach(a => {
+        const key = a.getAttribute('data-media-key') || a.href;
+        if (key && !window.__albumMap.has(key)) window.__albumMap.set(key, albumTitle(a));
+      });
+    }
+    window.__albumObserver?.disconnect();
+    window.__albumObserver = new MutationObserver(scan);
+    window.__albumObserver.observe(document.body, {childList: true, subtree: true});
+    scan();
+    console.log('capturing — now scroll slowly from the very top to the very bottom of the albums page.');
     ```
 
-    This reads `textContent` rather than `innerText` — Google Photos
-    virtualizes the album grid, so tiles scrolled out of view are present in
-    the DOM but not laid out, and `innerText` returns empty for those.
-    `data-media-key` (falling back to the link URL) dedupes repeated tiles for
-    the same album, which can occur with virtualized lists. The console
-    prints `captured: N of M links` so you can sanity-check the count; the
-    album titles are on your clipboard. Paste them into `google_albums.txt`.
-    (Google may change their page markup over time; if the snippet returns
-    nothing, use option 2.)
+    **Step 2 — scroll slowly from the very top of the page to the very
+    bottom.** This lets each tile mount (and get captured) before Google
+    unmounts it again as you keep scrolling.
+
+    **Step 3 — once you've reached the bottom, paste this to finish:**
+
+    ```js
+    window.__albumObserver.disconnect();
+    copy([...window.__albumMap.values()].join('\n'));
+    console.log('captured:', window.__albumMap.size, 'albums');
+    ```
+
+    The console prints `captured: N albums` so you can sanity-check the
+    count against how many albums you actually have; the titles are on your
+    clipboard. Paste them into `google_albums.txt`.
+
+    A couple of implementation notes, in case Google changes its markup and
+    you need to adjust the snippet: `albumTitle()` finds the thumbnail
+    element (identified by its inline `background-image` style rather than a
+    class name, since Google's class names are auto-generated and can change)
+    and reads only its next sibling as the title, ignoring the item-count and
+    "More options" button text that follow — a plain `textContent` read
+    across the whole tile picks up that trailing text too, since (unlike
+    `innerText`) it doesn't care whether an element is actually visible.
+    `data-media-key` (falling back to the link URL) dedupes tiles that mount
+    more than once. If the snippet stops working, use option 2.
 
 2.  **Google Takeout.** At [takeout.google.com](https://takeout.google.com),
     export only Google Photos. Each album becomes a folder in the export, so
