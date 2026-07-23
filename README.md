@@ -233,16 +233,25 @@ albums — matching both exact titles and the transfer service's
 1.  **Browser console (fast, nothing to download).** Open
     [photos.google.com/albums](https://photos.google.com/albums), scroll to the
     very bottom so every album has loaded, then open the developer console
-    (⌥⌘J in Chrome) and run:
+    (⌥⌘J in Chrome).
+
+    Chrome blocks pasting into the console by default (a self-XSS warning). If
+    you see a message about it, type `allow pasting` and press Enter first —
+    you only need to do this once per console session.
+
+    Then paste **only the code below** (not the ```` ```js ```` fence around
+    it — that's just Markdown syntax, not part of the snippet) and press
+    Enter:
 
     ```js
     copy([...document.querySelectorAll('a[href*="/album/"]')]
         .map(a => a.innerText.split('\n')[0]).join('\n'))
     ```
 
-    This copies all album titles to your clipboard — paste them into
-    `google_albums.txt`. (Google may change their page markup over time; if
-    the snippet returns nothing, use option 2.)
+    The console will print `undefined` — that's expected (`copy()` doesn't
+    return a value); the album titles are already on your clipboard. Paste
+    them into `google_albums.txt`. (Google may change their page markup over
+    time; if the snippet returns nothing, use option 2.)
 
 2.  **Google Takeout.** At [takeout.google.com](https://takeout.google.com),
     export only Google Photos. Each album becomes a folder in the export, so
