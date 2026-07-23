@@ -141,6 +141,8 @@ python3 sync_albums.py [OPTIONS]
 | `--album TITLE` | Sync only album(s) whose title matches this exact title or glob pattern (e.g. `"Summer*"`). May be repeated to select several. |
 | `--album-id ID` | Sync only the album with this ID (shown by `--list`). May be repeated. |
 | `--exclude PATTERN` | Skip album(s) whose title matches this exact title or glob pattern (e.g. `"-*"`). Applied after `--album`/`--album-id`. May be repeated. |
+| `--audit` | Report each Apple album's sync status against Google Photos and flag likely duplicate albums, then exit. Uploads nothing. |
+| `--google-albums FILE` | Text file with one Google Photos album title per line, exported manually from the website (see below). Lets `--audit` detect duplicates among albums the API cannot see. |
 | `--dry-run` | Scan library and check Google Photos, but **do not** upload or create albums. |
 | `--force` | Skip the confirmation prompt at startup. |
 | `--verbose` | Enable detailed logging (useful for debugging iCloud downloads). |
@@ -189,6 +191,134 @@ python3 sync_albums.py --album="-*"
 
 *Note: the `--exclude="-*"` / `--album="-*"` form (with `=`) is required when the
 pattern itself starts with `-`; otherwise it is mistaken for a command-line flag.*
+
+---
+
+## 🔎 Audit Mode
+
+Audit mode compares your Apple albums against Google Photos without uploading
+anything:
+
+```bash
+python3 sync_albums.py --audit
+```
+
+For each Apple album it reports whether it is fully synced, partially synced
+(with the pending count), or not synced, alongside the Apple and Google photo
+counts. It also lists script-created Google albums that no longer match any
+Apple album (e.g. albums renamed or deleted in Photos).
+
+### Detecting duplicates from other tools (e.g. Apple's transfer service)
+
+If you previously used Apple's [iCloud data transfer service](https://privacy.apple.com)
+to copy your library to Google Photos, you likely have duplicate albums named
+like `Copy of iPhoto Events/My Album`. **The Google Photos API cannot see
+these**: since Google's March 2025 API changes, an app can only list albums it
+created itself. There is no scope this script can request to read the rest of
+your library.
+
+The workaround is to export your album list manually from the website and give
+it to the script as a text file (one album title per line):
+
+```bash
+python3 sync_albums.py --audit --google-albums google_albums.txt
+```
+
+The audit then flags external albums that look like copies of your Apple
+albums — matching both exact titles and the transfer service's
+`Copy of <folder>/<title>` naming.
+
+**Creating `google_albums.txt` — two options:**
+
+1.  **Browser console (fast, nothing to download).** Open
+    [photos.google.com/albums](https://photos.google.com/albums) and open the
+    developer console (⌥⌘J in Chrome).
+
+    Chrome blocks pasting into the console by default (a self-XSS warning). If
+    you see a message about it, type `allow pasting` and press Enter first —
+    you only need to do this once per console session.
+
+    Google Photos only keeps tiles currently near your scroll position in the
+    page (virtualization), so a single query after scrolling to the bottom
+    misses everything that scrolled out of view earlier. Instead, capture
+    continuously while you scroll, in three steps.
+
+    **Step 1 — paste this once to start capturing** (not the ```` ```js ````
+    fence around it — that's just Markdown syntax, not part of the snippet):
+
+    ```js
+    window.__albumMap = window.__albumMap || new Map();
+    function albumTitle(a) {
+      const thumb = a.querySelector('[style*="background-image"]');
+      const titleEl = thumb ? thumb.nextElementSibling : null;
+      return (titleEl ? titleEl.textContent : a.textContent).trim();
+    }
+    function scan() {
+      document.querySelectorAll('a[href*="/album/"]').forEach(a => {
+        const key = a.getAttribute('data-media-key') || a.href;
+        if (key && !window.__albumMap.has(key)) window.__albumMap.set(key, albumTitle(a));
+      });
+    }
+    window.__albumObserver?.disconnect();
+    window.__albumObserver = new MutationObserver(scan);
+    window.__albumObserver.observe(document.body, {childList: true, subtree: true});
+    scan();
+    console.log('capturing — now scroll slowly from the very top to the very bottom of the albums page.');
+    ```
+
+    **Step 2 — scroll slowly from the very top of the page to the very
+    bottom.** This lets each tile mount (and get captured) before Google
+    unmounts it again as you keep scrolling.
+
+    **Step 3 — once you've reached the bottom, paste this to finish:**
+
+    ```js
+    window.__albumObserver.disconnect();
+    const blob = new Blob([[...window.__albumMap.values()].join('\n')], {type: 'text/plain'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'google_albums.txt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    console.log('downloaded:', window.__albumMap.size, 'albums to google_albums.txt');
+    ```
+
+    This downloads `google_albums.txt` straight to your Downloads folder —
+    move it next to `sync_albums.py` (or pass its full path to
+    `--google-albums`). The console prints `downloaded: N albums` so you can
+    sanity-check the count against how many albums you actually have.
+    (An earlier version of this step used the console's `copy()` helper to
+    put the list on your clipboard instead of downloading a file directly;
+    it worked inconsistently — `copy()` can silently fail depending on
+    focus/timing — so triggering a real file download is more reliable.)
+
+    A couple of implementation notes, in case Google changes its markup and
+    you need to adjust the snippet: `albumTitle()` finds the thumbnail
+    element (identified by its inline `background-image` style rather than a
+    class name, since Google's class names are auto-generated and can change)
+    and reads only its next sibling as the title, ignoring the item-count and
+    "More options" button text that follow — a plain `textContent` read
+    across the whole tile picks up that trailing text too, since (unlike
+    `innerText`) it doesn't care whether an element is actually visible.
+    `data-media-key` (falling back to the link URL) dedupes tiles that mount
+    more than once. If the snippet stops working, use option 2.
+
+2.  **Google Takeout.** At [takeout.google.com](https://takeout.google.com),
+    export only Google Photos. Each album becomes a folder in the export, so
+    after downloading:
+
+    ```bash
+    ls "Takeout/Google Photos" > google_albums.txt
+    ```
+
+    Downside: Takeout downloads all your photo content just to get the folder
+    names, which can be enormous.
+
+Deleting a duplicate *album* in Google Photos does **not** delete the photos in
+it — they remain in your library — so cleaning up flagged duplicates is safe.
+Still, spot-check a flagged album's contents against its twin before deleting.
 
 Selective syncs share the same state database as full syncs: photos uploaded
 via `--album`/`--album-id` are recorded per photo and album, so a later

@@ -106,6 +106,27 @@ def find_or_create_album(service, title, dry_run):
     new_album = service.albums().create(body={'album': {'title': title}}).execute()
     return new_album.get('id')
 
+def load_external_albums(path):
+    """Load Google Photos album titles from a text file, one title per line.
+
+    The Google Photos API only exposes albums created by this script, so a
+    full album list (e.g. albums made by Apple's iCloud transfer service)
+    must be exported manually from photos.google.com — see README."""
+    with open(path, encoding='utf-8') as f:
+        return [line.strip() for line in f if line.strip()]
+
+def match_external(title, external_titles):
+    """Return external Google album names that look like copies of an Apple album.
+
+    Matches exact titles and Apple transfer-service naming, which is
+    'Copy of <folder path>/<title>' (e.g. 'Copy of iPhoto Events/My Album')."""
+    matches = []
+    for ext in external_titles:
+        base = ext[len("Copy of "):] if ext.startswith("Copy of ") else ext
+        if base == title or base.endswith("/" + title):
+            matches.append(ext)
+    return matches
+
 def upload_photo(service, file_path, album_id):
     """The two-step Google Photos upload process with retry logic."""
     
@@ -281,6 +302,10 @@ def main():
 
   # Sync two specific albums by name
   python3 sync_albums.py --album "Summer 2024" --album "Ski Trip"
+
+  # Audit sync status, checking a manually exported Google album list
+  # for duplicates (see README for how to create google_albums.txt)
+  python3 sync_albums.py --audit --google-albums google_albums.txt
 ''')
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true", help="Skip confirmation prompt")
@@ -297,14 +322,18 @@ def main():
                         help="Sync only the album with this ID (shown by --list). May be repeated.")
     parser.add_argument("--exclude", action="append", metavar="PATTERN", default=[],
                         help="Skip album(s) whose title matches this exact title or glob pattern (e.g. \"-*\"). May be repeated.")
+    parser.add_argument("--audit", action="store_true",
+                        help="Report each Apple album's sync status against Google Photos and flag likely duplicates, then exit. Uploads nothing.")
+    parser.add_argument("--google-albums", metavar="FILE",
+                        help="Text file with one Google Photos album title per line, exported manually from photos.google.com (see README). Lets --audit detect duplicate albums the API cannot see, e.g. ones made by Apple's transfer service.")
 
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--num", type=int, help="Number of albums to sync")
     group.add_argument("--all", action="store_true", help="Sync all albums")
     args = parser.parse_args()
 
-    if not (args.list or args.album or args.album_id or args.num or args.all):
-        parser.error("specify --num N or --all, select albums with --album/--album-id, or use --list")
+    if not (args.list or args.audit or args.album or args.album_id or args.num or args.all):
+        parser.error("specify --num N or --all, select albums with --album/--album-id, or use --list/--audit")
 
     print("🚀 Initializing Sync...")
     conn = setup_tracking()
@@ -389,6 +418,81 @@ def main():
             pending = sum(1 for p in photos if p.uuid not in synced_uuids)
             print(f"   {album_types[album.uuid]:<7} {album.uuid:<38} {len(photos):>6} {pending:>7}  {album.title}")
         print("\nℹ️  Use --album \"TITLE\" or --album-id ID to sync specific albums.")
+        return
+
+    if args.audit:
+        external = []
+        if args.google_albums:
+            try:
+                external = load_external_albums(args.google_albums)
+                print(f"📄 Loaded {len(external)} Google album title(s) from {args.google_albums}")
+            except OSError as e:
+                print(f"❌ Could not read {args.google_albums}: {e}")
+                return
+
+        try:
+            service = get_google_service()
+            print("✅ Google Photos: Connected")
+        except Exception as e:
+            print(f"❌ Google Photos: Connection Failed ({e})")
+            return
+
+        # The API only returns albums this script created; anything else
+        # (manual albums, Apple transfer-service copies) is invisible to it.
+        app_albums = {}
+        page_token = None
+        while True:
+            results = service.albums().list(pageSize=50, pageToken=page_token).execute()
+            for a in results.get('albums', []):
+                app_albums[a['title']] = int(a.get('mediaItemsCount', 0))
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                break
+
+        cursor = conn.cursor()
+        print(f"\n🔎 Audit: {len(selected_albums)} Apple album(s) vs Google Photos")
+        print(f"   (Google albums created by this script: {len(app_albums)})\n")
+        matched_external = set()
+        fully_synced = partial = unsynced = 0
+        for album in sorted(selected_albums, key=lambda a: a.title):
+            synced_uuids = {row[0] for row in cursor.execute(
+                "SELECT photo_uuid FROM uploads WHERE album_title=?", (album.title,))}
+            pending = sum(1 for p in album.photos if p.uuid not in synced_uuids)
+            in_google = album.title in app_albums
+            if pending == 0 and in_google:
+                status = "✅ synced"
+                fully_synced += 1
+            elif in_google:
+                status = f"🔶 partial, {pending} pending"
+                partial += 1
+            else:
+                status = "⬜ not synced"
+                unsynced += 1
+            line = f"   {status:<24} {album.title}  [{len(album.photos)} in Apple"
+            if in_google:
+                line += f", {app_albums[album.title]} in Google"
+            line += "]"
+            print(line)
+            dupes = match_external(album.title, external)
+            matched_external.update(dupes)
+            for d in dupes:
+                if d != album.title:
+                    print(f"        ⚠️  likely duplicate album in Google: {d}")
+
+        print(f"\n📊 {fully_synced} synced, {partial} partial, {unsynced} not synced.")
+
+        # Only meaningful when auditing the full selection, not a filtered subset
+        if not (args.album or args.album_id or args.exclude):
+            apple_titles = {a.title for a in selected_albums}
+            orphans = sorted(t for t in app_albums if t not in apple_titles)
+            if orphans:
+                print(f"\n🪦 Script-created Google album(s) with no matching Apple album (renamed or deleted in Photos?):")
+                for t in orphans:
+                    print(f"      - {t}")
+
+        if external:
+            unmatched = sum(1 for t in external if t not in matched_external)
+            print(f"\n📄 External album list: {len(matched_external)} matched an Apple album, {unmatched} did not (manual albums, transfers of albums not in this library, etc).")
         return
 
     # State tracking and Google album lookup both key on title, so albums sharing
