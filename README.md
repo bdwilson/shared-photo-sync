@@ -244,14 +244,28 @@ albums — matching both exact titles and the transfer service's
     Enter:
 
     ```js
-    copy([...document.querySelectorAll('a[href*="/album/"]')]
-        .map(a => a.innerText.split('\n')[0]).join('\n'))
+    const seen = new Set();
+    const titles = [];
+    for (const a of document.querySelectorAll('a[href*="/album/"]')) {
+      const key = a.getAttribute('data-media-key') || a.href;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const title = a.textContent.trim();
+      if (title) titles.push(title);
+    }
+    copy(titles.join('\n'));
+    console.log('captured:', titles.length, 'of', document.querySelectorAll('a[href*="/album/"]').length, 'links');
     ```
 
-    The console will print `undefined` — that's expected (`copy()` doesn't
-    return a value); the album titles are already on your clipboard. Paste
-    them into `google_albums.txt`. (Google may change their page markup over
-    time; if the snippet returns nothing, use option 2.)
+    This reads `textContent` rather than `innerText` — Google Photos
+    virtualizes the album grid, so tiles scrolled out of view are present in
+    the DOM but not laid out, and `innerText` returns empty for those.
+    `data-media-key` (falling back to the link URL) dedupes repeated tiles for
+    the same album, which can occur with virtualized lists. The console
+    prints `captured: N of M links` so you can sanity-check the count; the
+    album titles are on your clipboard. Paste them into `google_albums.txt`.
+    (Google may change their page markup over time; if the snippet returns
+    nothing, use option 2.)
 
 2.  **Google Takeout.** At [takeout.google.com](https://takeout.google.com),
     export only Google Photos. Each album becomes a folder in the export, so
