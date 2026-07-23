@@ -141,6 +141,8 @@ python3 sync_albums.py [OPTIONS]
 | `--album TITLE` | Sync only album(s) whose title matches this exact title or glob pattern (e.g. `"Summer*"`). May be repeated to select several. |
 | `--album-id ID` | Sync only the album with this ID (shown by `--list`). May be repeated. |
 | `--exclude PATTERN` | Skip album(s) whose title matches this exact title or glob pattern (e.g. `"-*"`). Applied after `--album`/`--album-id`. May be repeated. |
+| `--audit` | Report each Apple album's sync status against Google Photos and flag likely duplicate albums, then exit. Uploads nothing. |
+| `--google-albums FILE` | Text file with one Google Photos album title per line, exported manually from the website (see below). Lets `--audit` detect duplicates among albums the API cannot see. |
 | `--dry-run` | Scan library and check Google Photos, but **do not** upload or create albums. |
 | `--force` | Skip the confirmation prompt at startup. |
 | `--verbose` | Enable detailed logging (useful for debugging iCloud downloads). |
@@ -189,6 +191,73 @@ python3 sync_albums.py --album="-*"
 
 *Note: the `--exclude="-*"` / `--album="-*"` form (with `=`) is required when the
 pattern itself starts with `-`; otherwise it is mistaken for a command-line flag.*
+
+---
+
+## 🔎 Audit Mode
+
+Audit mode compares your Apple albums against Google Photos without uploading
+anything:
+
+```bash
+python3 sync_albums.py --audit
+```
+
+For each Apple album it reports whether it is fully synced, partially synced
+(with the pending count), or not synced, alongside the Apple and Google photo
+counts. It also lists script-created Google albums that no longer match any
+Apple album (e.g. albums renamed or deleted in Photos).
+
+### Detecting duplicates from other tools (e.g. Apple's transfer service)
+
+If you previously used Apple's [iCloud data transfer service](https://privacy.apple.com)
+to copy your library to Google Photos, you likely have duplicate albums named
+like `Copy of iPhoto Events/My Album`. **The Google Photos API cannot see
+these**: since Google's March 2025 API changes, an app can only list albums it
+created itself. There is no scope this script can request to read the rest of
+your library.
+
+The workaround is to export your album list manually from the website and give
+it to the script as a text file (one album title per line):
+
+```bash
+python3 sync_albums.py --audit --google-albums google_albums.txt
+```
+
+The audit then flags external albums that look like copies of your Apple
+albums — matching both exact titles and the transfer service's
+`Copy of <folder>/<title>` naming.
+
+**Creating `google_albums.txt` — two options:**
+
+1.  **Browser console (fast, nothing to download).** Open
+    [photos.google.com/albums](https://photos.google.com/albums), scroll to the
+    very bottom so every album has loaded, then open the developer console
+    (⌥⌘J in Chrome) and run:
+
+    ```js
+    copy([...document.querySelectorAll('a[href*="/album/"]')]
+        .map(a => a.innerText.split('\n')[0]).join('\n'))
+    ```
+
+    This copies all album titles to your clipboard — paste them into
+    `google_albums.txt`. (Google may change their page markup over time; if
+    the snippet returns nothing, use option 2.)
+
+2.  **Google Takeout.** At [takeout.google.com](https://takeout.google.com),
+    export only Google Photos. Each album becomes a folder in the export, so
+    after downloading:
+
+    ```bash
+    ls "Takeout/Google Photos" > google_albums.txt
+    ```
+
+    Downside: Takeout downloads all your photo content just to get the folder
+    names, which can be enormous.
+
+Deleting a duplicate *album* in Google Photos does **not** delete the photos in
+it — they remain in your library — so cleaning up flagged duplicates is safe.
+Still, spot-check a flagged album's contents against its twin before deleting.
 
 Selective syncs share the same state database as full syncs: photos uploaded
 via `--album`/`--album-id` are recorded per photo and album, so a later
