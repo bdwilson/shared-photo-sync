@@ -8,6 +8,7 @@ client_secret.json
 sync_state.db
 token.pickle
 *.code-workspace
+log.out
 
 # C extensions
 *.so
