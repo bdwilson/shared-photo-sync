@@ -249,9 +249,16 @@ albums — matching both exact titles and the transfer service's
     ```js
     window.__albumMap = window.__albumMap || new Map();
     function albumTitle(a) {
-      const thumb = a.querySelector('[style*="background-image"]');
-      const titleEl = thumb ? thumb.nextElementSibling : null;
-      return (titleEl ? titleEl.textContent : a.textContent).trim();
+      const clone = a.cloneNode(true);
+      clone.querySelectorAll('*').forEach(el => {
+        if (el.children.length === 0) {
+          const t = el.textContent.trim();
+          if (/^\d+\s*items?(\s*·\s*shared)?$/i.test(t) || /^more options$/i.test(t) || /^shared$/i.test(t)) {
+            el.remove();
+          }
+        }
+      });
+      return clone.textContent.replace(/\s+/g, ' ').trim();
     }
     function scan() {
       document.querySelectorAll('a[href*="/album/"]').forEach(a => {
@@ -295,15 +302,22 @@ albums — matching both exact titles and the transfer service's
     focus/timing — so triggering a real file download is more reliable.)
 
     A couple of implementation notes, in case Google changes its markup and
-    you need to adjust the snippet: `albumTitle()` finds the thumbnail
-    element (identified by its inline `background-image` style rather than a
-    class name, since Google's class names are auto-generated and can change)
-    and reads only its next sibling as the title, ignoring the item-count and
-    "More options" button text that follow — a plain `textContent` read
-    across the whole tile picks up that trailing text too, since (unlike
-    `innerText`) it doesn't care whether an element is actually visible.
+    you need to adjust the snippet: each tile's photo count and "More
+    options" button text live in the DOM alongside the title, hidden until
+    hover — and (unlike `innerText`) `textContent` doesn't care whether an
+    element is actually visible, so a plain read of the whole tile glues
+    them onto the title with no separator (e.g. a "Christmas Parade 2024"
+    album with 37 items reads back as "Christmas Parade 202437 items").
+    `albumTitle()` works around this by cloning the tile and removing any
+    leaf element whose own text is just a count, "More options", or
+    "Shared", then reading whatever text is left — which is more reliable
+    than assuming the title sits in a fixed position relative to the
+    thumbnail, since that position isn't consistent across tile variants.
     `data-media-key` (falling back to the link URL) dedupes tiles that mount
-    more than once. If the snippet stops working, use option 2.
+    more than once. Verified against a live account (595 albums captured
+    cleanly, including multi-line titles and folder-nested "Copy of ..."
+    entries from Apple's transfer service). If the snippet stops working,
+    use option 2.
 
 2.  **Google Takeout.** At [takeout.google.com](https://takeout.google.com),
     export only Google Photos. Each album becomes a folder in the export, so
