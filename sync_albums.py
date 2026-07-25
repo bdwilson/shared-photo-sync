@@ -4,9 +4,11 @@ import random
 import sqlite3
 import argparse
 import fnmatch
+import csv
 import sys
 import logging
 import osxphotos
+from collections import Counter
 import pickle
 import requests
 import subprocess
@@ -306,6 +308,10 @@ def main():
   # Audit sync status, checking a manually exported Google album list
   # for duplicates (see README for how to create google_albums.txt)
   python3 sync_albums.py --audit --google-albums google_albums.txt
+
+  # Report each Shared Album's owner, size, and date range -- useful for
+  # planning a shared-album consolidation (see README)
+  python3 sync_albums.py --shared-inventory --csv shared_inventory.csv
 ''')
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true", help="Skip confirmation prompt")
@@ -326,14 +332,18 @@ def main():
                         help="Report each Apple album's sync status against Google Photos and flag likely duplicates, then exit. Uploads nothing.")
     parser.add_argument("--google-albums", metavar="FILE",
                         help="Text file with one Google Photos album title per line, exported manually from photos.google.com (see README). Lets --audit detect duplicate albums the API cannot see, e.g. ones made by Apple's transfer service.")
+    parser.add_argument("--shared-inventory", action="store_true",
+                        help="Report each Shared Album's owner, size, and date range to help plan a consolidation, then exit. Does not touch Google or upload anything.")
+    parser.add_argument("--csv", metavar="FILE",
+                        help="Also write --shared-inventory output to this CSV file.")
 
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--num", type=int, help="Number of albums to sync")
     group.add_argument("--all", action="store_true", help="Sync all albums")
     args = parser.parse_args()
 
-    if not (args.list or args.audit or args.album or args.album_id or args.num or args.all):
-        parser.error("specify --num N or --all, select albums with --album/--album-id, or use --list/--audit")
+    if not (args.list or args.audit or args.shared_inventory or args.album or args.album_id or args.num or args.all):
+        parser.error("specify --num N or --all, select albums with --album/--album-id, or use --list/--audit/--shared-inventory")
 
     print("🚀 Initializing Sync...")
     conn = setup_tracking()
@@ -418,6 +428,54 @@ def main():
             pending = sum(1 for p in photos if p.uuid not in synced_uuids)
             print(f"   {album_types[album.uuid]:<7} {album.uuid:<38} {len(photos):>6} {pending:>7}  {album.title}")
         print("\nℹ️  Use --album \"TITLE\" or --album-id ID to sync specific albums.")
+        return
+
+    if args.shared_inventory:
+        shared_albums = [a for a in selected_albums if album_types.get(a.uuid) == "shared"]
+        if not shared_albums:
+            print("❌ No shared albums matched. Try without --albums local, --album, or --exclude filters.")
+            return
+
+        rows = []
+        for album in shared_albums:
+            photos = album.photos
+            dates = [p.date for p in photos if p.date]
+            rows.append({
+                "title": album.title,
+                "owner": album.owner or "",
+                "count": len(photos),
+                "start_date": min(dates).date().isoformat() if dates else "",
+                "end_date": max(dates).date().isoformat() if dates else "",
+                "album_created": album.creation_date.date().isoformat() if album.creation_date else "",
+            })
+
+        rows.sort(key=lambda r: (r["owner"], -r["count"]))
+
+        print(f"\n📦 Shared Album Inventory ({len(rows)} albums)")
+        print(f"   {'OWNER':<20} {'PHOTOS':>7}  {'DATE RANGE':<23} TITLE")
+        for r in rows:
+            date_range = f"{r['start_date']} to {r['end_date']}" if r["start_date"] else "(no dated photos)"
+            owner_label = r["owner"] if r["owner"] else "(blank/unresolved)"
+            print(f"   {owner_label:<20} {r['count']:>7}  {date_range:<23} {r['title']}")
+
+        owner_labels = [r["owner"] or "(blank/unresolved)" for r in rows]
+        owner_album_counts = Counter(owner_labels)
+        total_photos = sum(r["count"] for r in rows)
+        print(f"\n📊 {len(rows)} shared albums, {total_photos} total photo references, by owner:")
+        for owner, n in owner_album_counts.most_common():
+            owner_photos = sum(r["count"] for r, label in zip(rows, owner_labels) if label == owner)
+            print(f"      {owner:<20} {n:>4} albums, {owner_photos:>6} photos")
+
+        print("\nℹ️  'owner' blank/unresolved commonly means an album you created yourself, but this")
+        print("   isn't verified — check it against one album you're certain you own before relying")
+        print("   on this split to decide what's safe to consolidate from your own account.")
+
+        if args.csv:
+            with open(args.csv, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=["title", "owner", "count", "start_date", "end_date", "album_created"])
+                writer.writeheader()
+                writer.writerows(rows)
+            print(f"\n💾 Wrote {len(rows)} rows to {args.csv}")
         return
 
     if args.audit:

@@ -143,6 +143,8 @@ python3 sync_albums.py [OPTIONS]
 | `--exclude PATTERN` | Skip album(s) whose title matches this exact title or glob pattern (e.g. `"-*"`). Applied after `--album`/`--album-id`. May be repeated. |
 | `--audit` | Report each Apple album's sync status against Google Photos and flag likely duplicate albums, then exit. Uploads nothing. |
 | `--google-albums FILE` | Text file with one Google Photos album title per line, exported manually from the website (see below). Lets `--audit` detect duplicates among albums the API cannot see. |
+| `--shared-inventory` | Report each Shared Album's owner, size, and photo date range, then exit. Uploads nothing, doesn't touch Google. Useful for planning a shared-album consolidation. |
+| `--csv FILE` | Also write `--shared-inventory` output to this CSV file for sorting/filtering in a spreadsheet. |
 | `--dry-run` | Scan library and check Google Photos, but **do not** upload or create albums. |
 | `--force` | Skip the confirmation prompt at startup. |
 | `--verbose` | Enable detailed logging (useful for debugging iCloud downloads). |
@@ -249,9 +251,16 @@ albums — matching both exact titles and the transfer service's
     ```js
     window.__albumMap = window.__albumMap || new Map();
     function albumTitle(a) {
-      const thumb = a.querySelector('[style*="background-image"]');
-      const titleEl = thumb ? thumb.nextElementSibling : null;
-      return (titleEl ? titleEl.textContent : a.textContent).trim();
+      const clone = a.cloneNode(true);
+      clone.querySelectorAll('*').forEach(el => {
+        if (el.children.length === 0) {
+          const t = el.textContent.trim();
+          if (/^\d+\s*items?(\s*·\s*shared)?$/i.test(t) || /^more options$/i.test(t) || /^shared$/i.test(t)) {
+            el.remove();
+          }
+        }
+      });
+      return clone.textContent.replace(/\s+/g, ' ').trim();
     }
     function scan() {
       document.querySelectorAll('a[href*="/album/"]').forEach(a => {
@@ -295,15 +304,22 @@ albums — matching both exact titles and the transfer service's
     focus/timing — so triggering a real file download is more reliable.)
 
     A couple of implementation notes, in case Google changes its markup and
-    you need to adjust the snippet: `albumTitle()` finds the thumbnail
-    element (identified by its inline `background-image` style rather than a
-    class name, since Google's class names are auto-generated and can change)
-    and reads only its next sibling as the title, ignoring the item-count and
-    "More options" button text that follow — a plain `textContent` read
-    across the whole tile picks up that trailing text too, since (unlike
-    `innerText`) it doesn't care whether an element is actually visible.
+    you need to adjust the snippet: each tile's photo count and "More
+    options" button text live in the DOM alongside the title, hidden until
+    hover — and (unlike `innerText`) `textContent` doesn't care whether an
+    element is actually visible, so a plain read of the whole tile glues
+    them onto the title with no separator (e.g. a "Christmas Parade 2024"
+    album with 37 items reads back as "Christmas Parade 202437 items").
+    `albumTitle()` works around this by cloning the tile and removing any
+    leaf element whose own text is just a count, "More options", or
+    "Shared", then reading whatever text is left — which is more reliable
+    than assuming the title sits in a fixed position relative to the
+    thumbnail, since that position isn't consistent across tile variants.
     `data-media-key` (falling back to the link URL) dedupes tiles that mount
-    more than once. If the snippet stops working, use option 2.
+    more than once. Verified against a live account (595 albums captured
+    cleanly, including multi-line titles and folder-nested "Copy of ..."
+    entries from Apple's transfer service). If the snippet stops working,
+    use option 2.
 
 2.  **Google Takeout.** At [takeout.google.com](https://takeout.google.com),
     export only Google Photos. Each album becomes a folder in the export, so
@@ -323,6 +339,39 @@ Still, spot-check a flagged album's contents against its twin before deleting.
 Selective syncs share the same state database as full syncs: photos uploaded
 via `--album`/`--album-id` are recorded per photo and album, so a later
 `--all` run skips them and only uploads what's still missing.
+
+---
+
+## 📦 Shared Album Inventory
+
+If you have a large number of Apple Shared Albums and want to plan
+consolidating them (fewer, larger albums instead of many small ones — e.g. to
+free up iCloud shared-album slots, or reduce clutter), `--shared-inventory`
+reports each Shared Album's owner, photo count, and date range without
+touching Google or uploading anything:
+
+```bash
+python3 sync_albums.py --shared-inventory --csv shared_inventory.csv
+```
+
+The CSV output is useful for sorting/filtering in a spreadsheet once you have
+more than a handful of albums.
+
+**Important caveat on `owner`**: Apple Photos' shared-album *ownership* has
+real consequences beyond the report itself. If you're the owner of a shared
+album, its photos are already regular members of your personal library — the
+shared album is just another view onto them. If you're **not** the owner (a
+participant on someone else's shared album, e.g. a spouse's), Apple requires
+an explicit "Save to Library" step before those photos can be added to any
+other album, and once saved, they become permanent, ordinary library photos —
+removing them from an album afterward does not undo that. This means any
+future tooling that stages shared-album content into a new local album (for
+recreating a consolidated iCloud Shared Album, since there's no API to write
+to one directly) should only do so for albums you actually own; doing it for
+someone else's shared album will permanently grow your personal library with
+their photos. The inventory report's `owner` column is the input for that
+decision, not a hint — verify what it returns for one album you're certain
+you own before trusting the split.
 
 ---
 
