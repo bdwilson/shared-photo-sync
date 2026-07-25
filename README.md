@@ -143,6 +143,8 @@ python3 sync_albums.py [OPTIONS]
 | `--exclude PATTERN` | Skip album(s) whose title matches this exact title or glob pattern (e.g. `"-*"`). Applied after `--album`/`--album-id`. May be repeated. |
 | `--audit` | Report each Apple album's sync status against Google Photos and flag likely duplicate albums, then exit. Uploads nothing. |
 | `--google-albums FILE` | Text file with one Google Photos album title per line, exported manually from the website (see below). Lets `--audit` detect duplicates among albums the API cannot see. |
+| `--shared-inventory` | Report each Shared Album's owner, size, and photo date range, then exit. Uploads nothing, doesn't touch Google. Useful for planning a shared-album consolidation. |
+| `--csv FILE` | Also write `--shared-inventory` output to this CSV file for sorting/filtering in a spreadsheet. |
 | `--dry-run` | Scan library and check Google Photos, but **do not** upload or create albums. |
 | `--force` | Skip the confirmation prompt at startup. |
 | `--verbose` | Enable detailed logging (useful for debugging iCloud downloads). |
@@ -337,6 +339,39 @@ Still, spot-check a flagged album's contents against its twin before deleting.
 Selective syncs share the same state database as full syncs: photos uploaded
 via `--album`/`--album-id` are recorded per photo and album, so a later
 `--all` run skips them and only uploads what's still missing.
+
+---
+
+## 📦 Shared Album Inventory
+
+If you have a large number of Apple Shared Albums and want to plan
+consolidating them (fewer, larger albums instead of many small ones — e.g. to
+free up iCloud shared-album slots, or reduce clutter), `--shared-inventory`
+reports each Shared Album's owner, photo count, and date range without
+touching Google or uploading anything:
+
+```bash
+python3 sync_albums.py --shared-inventory --csv shared_inventory.csv
+```
+
+The CSV output is useful for sorting/filtering in a spreadsheet once you have
+more than a handful of albums.
+
+**Important caveat on `owner`**: Apple Photos' shared-album *ownership* has
+real consequences beyond the report itself. If you're the owner of a shared
+album, its photos are already regular members of your personal library — the
+shared album is just another view onto them. If you're **not** the owner (a
+participant on someone else's shared album, e.g. a spouse's), Apple requires
+an explicit "Save to Library" step before those photos can be added to any
+other album, and once saved, they become permanent, ordinary library photos —
+removing them from an album afterward does not undo that. This means any
+future tooling that stages shared-album content into a new local album (for
+recreating a consolidated iCloud Shared Album, since there's no API to write
+to one directly) should only do so for albums you actually own; doing it for
+someone else's shared album will permanently grow your personal library with
+their photos. The inventory report's `owner` column is the input for that
+decision, not a hint — verify what it returns for one album you're certain
+you own before trusting the split.
 
 ---
 
